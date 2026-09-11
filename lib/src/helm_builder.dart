@@ -12,10 +12,8 @@ import 'helm_feature.dart';
 /// [onUnbind]).
 ///
 /// `didUpdateWidget` реализован здесь один раз: каждому конкретному `State`
-/// достаточно сообщить, как достать [HelmFeature] из старого виджета (см.
-/// [featureOf]) — раньше идентичный `didUpdateWidget` (сравнить `feature` на
-/// `identical`, при смене вызвать [rebindFeature]) был дословно продублирован
-/// в каждом из трёх `State`.
+/// достаточно сообщить, как достать [HelmFeature] из старого виджета
+/// (см. [featureOf])
 ///
 /// Сам скелет "acquire → attach → пережить смену контроллера → release"
 /// вынесен в `FeatureSubscription` (`binding_utils.dart`) — тот же класс

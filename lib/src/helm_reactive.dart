@@ -62,8 +62,8 @@ class _WatchBinding<S, E>(
   this {
     _sub = FeatureSubscription<S, E>(
       feature,
-      attach: (c) => c.addListener(_onChanged),
-      detach: (c) => c.removeListener(_onChanged),
+      attach: (controller) => controller.addListener(_onChanged),
+      detach: (controller) => controller.removeListener(_onChanged),
       onControllerSwapped: _onChanged,
     );
   }
@@ -93,11 +93,11 @@ class _SelectBinding<S, E, R>(
       // attach вызывается синхронно из конструктора FeatureSubscription, и
       // _value гарантированно готово раньше, чем что-либо сможет вызвать
       // _listener.
-      attach: (c) {
-        _value = selector(c.state);
-        c.addListener(_listener);
+      attach: (controller) {
+        _value = selector(controller.state);
+        controller.addListener(_listener);
       },
-      detach: (c) => c.removeListener(_listener),
+      detach: (controller) => controller.removeListener(_listener),
       onControllerSwapped: _listener,
     );
   }
@@ -140,8 +140,8 @@ class _EffectBinding<S, E>(
   this {
     _sub = FeatureSubscription<S, E>(
       feature,
-      attach: (c) => c.addListener(_listener),
-      detach: (c) => c.removeListener(_listener),
+      attach: (controller) => controller.addListener(_listener),
+      detach: (controller) => controller.removeListener(_listener),
       onControllerSwapped: _handleControllerSwapped,
     );
 
