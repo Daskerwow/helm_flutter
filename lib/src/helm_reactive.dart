@@ -255,13 +255,24 @@ mixin HelmReactiveElement on ComponentElement {
     final previousCurrent = _current;
     _current = this;
     final seen = _setPool.isNotEmpty ? _setPool.removeLast() : <_BindingKey>{};
+
     _seenStack.add(seen);
+
     try {
       return super.build();
     } finally {
       final finished = _seenStack.removeLast();
       _current = previousCurrent;
-      _disposeUnseenBindings(finished);
+
+      if (_seenStack.isNotEmpty) {
+        // реентрантный уровень — не финальный
+        _seenStack.last.addAll(finished);
+      } else {
+        // финальный уровень — чистим устаревшие биндинги
+        // только когда стек пустой
+        _disposeUnseenBindings(finished);
+      }
+
       finished.clear();
       _setPool.add(finished);
     }

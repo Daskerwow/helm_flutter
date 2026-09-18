@@ -169,6 +169,7 @@ final class HelmFeature<S, E>
   }
 
   @override
+  @protected
   StateStore<S, E> get dispatchTarget => _ctrl.store;
 
   /// Текущее состояние — синхронное чтение без подписки и без context.
@@ -207,47 +208,40 @@ final class HelmFeature<S, E>
   }
 
   /// Подписка на изменения состояния в обход виджетов — участвует в том же
-  /// подсчёте ссылок, что и `HelmBuilder`/`HelmSelector`/`HelmListener`:
-  /// вызывает [acquire], а вызов возвращённой функции — [release]. Для
-  /// фичи с `autoDispose: true` достаточно честно вызвать её — Store
-  /// закроется, если больше никто его не держит; забытый вызов, как и
-  /// раньше, держит Store живым (предохранитель от use-after-dispose, а не
-  /// утечка — но см. [debugActiveFeatures], чтобы такие случаи не
-  /// оставались незамеченными в тестах).
+  /// подсчёте ссылок, что и `HelmBuilder`/`HelmSelector`/`HelmListener`.
+  /// Реализован через [FeatureSubscription] (`binding_utils.dart`) — тот же
+  /// общий скелет "acquire → attach → пережить смену контроллера →
+  /// release", которым пользуются все остальные биндинги; парность
+  /// `acquire()`/`release()` тем самым гарантирована в одном месте, а не
+  /// повторена здесь вручную. Для фичи с `autoDispose: true` достаточно
+  /// честно вызвать возвращённую функцию — Store закроется, если больше
+  /// никто его не держит; забытый вызов, как и раньше, держит Store живым
+  /// (предохранитель от use-after-dispose, а не утечка — но см.
+  /// [debugActiveFeatures], чтобы такие случаи не оставались незамеченными
+  /// в тестах).
   ///
   /// Переподключается к новому [HelmController] после `overrideWith`/
-  /// принудительного [dispose] так же, как `HelmBuilder`/`feature.watch()`
-  /// — подписывается на [lifecycle] и меняет слушателя на актуальный
-  /// контроллер через [swapController].
+  /// принудительного [dispose] так же, как `HelmBuilder`/`feature.watch()`.
   ///
-  /// Возвращает функцию отписки, безопасную к повторному вызову (idempotent).
+  /// Возвращает функцию отписки, безопасную к повторному вызову (idempotent)
+  /// — в отличие от [FeatureSubscription.dispose] самой по себе, которая
+  /// бросает на повторный вызов; идемпотентность здесь добавлена поверх неё
+  /// явным флагом, а не изменением контракта [FeatureSubscription].
   void Function() listen(void Function(S state) onChange) {
-    var controller = acquire();
-    void listener() => onChange(controller.state);
-    controller.addListener(listener);
+    late final FeatureSubscription<S, E> subscription;
+    void listener() => onChange(subscription.controller.state);
 
-    void onLifecycle() {
-      final fresh = swapController<S, E>(
-        feature: this,
-        current: controller,
-        removeListener: (c) => c.removeListener(listener),
-        addListener: (c) => c.addListener(listener),
-      );
-      if (fresh == null) return;
-      controller = fresh;
-    }
-
-    lifecycle.addListener(onLifecycle);
+    subscription = FeatureSubscription<S, E>(
+      this,
+      attach: (controller) => controller.addListener(listener),
+      detach: (controller) => controller.removeListener(listener),
+    );
 
     var released = false;
     return () {
       if (released) return;
-
       released = true;
-      controller.removeListener(listener);
-      lifecycle.removeListener(onLifecycle);
-
-      release();
+      subscription.dispose();
     };
   }
 
@@ -315,10 +309,15 @@ final class HelmFeature<S, E>
   /// });
   /// ```
   ///
-  /// Возвращает функцию восстановления, **идемпотентную**: повторный вызов
+  /// Возвращает функцию восстановления, **идемпотентную для успешного
+  /// восстановления**: повторный вызов после того, как оно уже прошло
   /// (например, случайно и в `tearDown`, и вручную) — no-op, а не лишнее
   /// пересоздание Store и повторный [lifecycle]-`bump()` для всех
-  /// биндингов.
+  /// биндингов. Восстановление, упавшее из-за нарушения LIFO (см. ниже),
+  /// идемпотентным не считается: стек подмен в этом случае не тронут,
+  /// поэтому повторный вызов — не no-op, а новая попытка, и она
+  /// корректно завершится успехом, если к этому моменту порядок
+  /// восстановления снаружи уже исправлен.
   ///
   /// ### Настоящий стек подмен
   ///
@@ -344,17 +343,19 @@ final class HelmFeature<S, E>
     var restored = false;
     return () {
       if (restored) return;
-      restored = true;
 
       if (_overrideStack.length != expectedStackLength) {
         throw StateError(
           'Helm: overrideWith() восстановлен не в порядке LIFO — между '
           'подменой и восстановлением этого overrideWith кто-то ещё не '
           'восстановил свой. Оборачивай overrideWith/restore строго парами '
-          '(например, через addTearDown сразу после каждого overrideWith).',
+          '(например, через addTearDown сразу после каждого overrideWith). '
+          'Стек подмен не тронут — почини порядок восстановления снаружи и '
+          'вызови restore() ещё раз.',
         );
       }
 
+      restored = true;
       final previous = _overrideStack.removeLast();
       _factory = previous;
       if (isActive) _disposeInternal();
@@ -362,10 +363,11 @@ final class HelmFeature<S, E>
   }
 
   void _disposeInternal() {
+    final controller = _controller;
+    if (controller == null) return;
+
     _effectUnsubscribe?.call();
     _effectUnsubscribe = null;
-
-    final controller = _controller;
     _controller = null;
 
     assert(() {
@@ -382,6 +384,6 @@ final class HelmFeature<S, E>
     // (_debugAssertNotDisposed) при каждом overrideWith()/принудительном
     // dispose() на смонтированном биндинге.
     _lifecycle.bump();
-    controller?.dispose();
+    controller.dispose();
   }
 }

@@ -30,6 +30,7 @@ final class HelmController<S, E>(
   }
 
   @override
+  @protected
   StateStore<S, E> get dispatchTarget => store;
 
   late final void Function() _unsubscribe;
