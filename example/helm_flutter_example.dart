@@ -1,26 +1,33 @@
-class Demo {
-  bool _busy = false;
+import 'package:flutter/widgets.dart';
+import 'package:helm_flutter/helm_flutter.dart';
 
-  void run(void Function() sideEffect) {
-    if (_busy) {
-      print('заблокировано — уже внутри run()');
-      return;
-    }
-    _busy = true;
-    print('вошли в run(), _busy = true');
+final counterFeature = HelmFeature<int, Never>(
+  () => StateStore(initialState: 0),
+);
 
-    sideEffect(); // может СИНХРОННО вызвать run() ещё раз
+final class Increment implements SyncCommand<int> {
+  const Increment();
 
-    _busy = false;
-    print('вышли из run(), _busy = false');
-  }
+  @override
+  int execute(int current) => current + 1;
 }
 
-void main() {
-  final d = Demo();
-  d.run(() {
-    print('sideEffect начал работу');
-    d.run(() => print('этого не будет')); // вложенный вызов ДО finally
-    print('sideEffect закончил');
-  });
+void main() => runApp(const CounterApp());
+
+final class CounterApp extends StatelessWidget {
+  const CounterApp({super.key});
+
+  @override
+  Widget build(BuildContext context) => Directionality(
+    textDirection: TextDirection.ltr,
+    child: Center(
+      child: HelmBuilder<int, Never>(
+        counterFeature,
+        builder: (context, count) => GestureDetector(
+          onTap: () => counterFeature.dispatchSync(const Increment()),
+          child: Text('Count: $count'),
+        ),
+      ),
+    ),
+  );
 }

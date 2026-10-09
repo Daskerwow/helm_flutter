@@ -1,28 +1,19 @@
+import 'package:flutter/foundation.dart';
+
 import 'helm_controller.dart';
 import 'helm_feature.dart';
 
-/// Общий паттерн "переподключиться к новому контроллеру фичи после
-/// `overrideWith`/принудительного `dispose`" — используется всеми
-/// биндингами моста ([HelmBuilder]/[HelmSelector]/[HelmListener],
-/// `feature.watch()`/`.select()`/`.effect()`, [HelmComputed]).
-///
-/// Спрашивает [HelmFeature.currentController], сравнивает `identical` со
-/// старым и, если он реально сменился, снимает слушателя со старого и
-/// вешает на новый. Что именно делать с "значением" после смены
-/// (setState/пересчитать selector/дёрнуть effect) — решает вызывающий код.
-HelmController<S, E>? swapController<S, E>({
-  required HelmFeature<S, E> feature,
-  required HelmController<S, E> current,
-  required void Function(HelmController<S, E> controller) removeListener,
-  required void Function(HelmController<S, E> controller) addListener,
-}) {
-  final fresh = feature.currentController;
-  if (identical(fresh, current)) return null;
-
-  removeListener(current);
-  addListener(fresh);
-
-  return fresh;
+Never throwFeatureIdentityChanged(String owner) {
+  throw FlutterError.fromParts([
+    ErrorSummary('$owner не может сменить HelmFeature в существующем Element.'),
+    ErrorDescription(
+      'Набор фич — часть жизненного цикла Element и должен быть неизменяемым.',
+    ),
+    ErrorHint(
+      'Чтобы переключить фичу, создай новый Element с новым Key, например '
+      'ObjectKey(feature).',
+    ),
+  ]);
 }
 
 /// Общий, НЕ завязанный ни на `State`, ни на `Element` скелет "подписаться
@@ -59,8 +50,14 @@ class FeatureSubscription<S, E> {
     this.onControllerSwapped,
     this.shouldSwap,
   }) : controller = feature.acquire() {
-    attach(controller);
-    feature.lifecycle.addListener(_onLifecycle);
+    try {
+      _attach(controller);
+      feature.lifecycle.addListener(_onLifecycle);
+      _listensToLifecycle = true;
+    } catch (_) {
+      dispose();
+      rethrow;
+    }
   }
 
   final HelmFeature<S, E> feature;
@@ -91,19 +88,37 @@ class FeatureSubscription<S, E> {
 
   /// Актуальный контроллер — переприсваивается в [_onLifecycle] при смене.
   HelmController<S, E> controller;
+  bool _attached = false;
+  bool _listensToLifecycle = false;
+  bool _disposed = false;
+
+  void _attach(HelmController<S, E> target) {
+    // `detach` безопасен и при частично выполнившемся `attach`: обычные
+    // реализации снимают listener no-op-ом. Флаг ставится заранее, чтобы
+    // rollback гарантированно освободил даже частично подключённый ресурс.
+    _attached = true;
+    attach(target);
+  }
 
   void _onLifecycle() {
-    if (shouldSwap?.call() == false) return;
+    if (_disposed || shouldSwap?.call() == false) return;
 
-    final fresh = swapController<S, E>(
-      feature: feature,
-      current: controller,
-      removeListener: detach,
-      addListener: attach,
-    );
-    if (fresh == null) return;
+    final fresh = feature.currentController;
+    if (identical(fresh, controller)) return;
 
-    controller = fresh;
+    try {
+      detach(controller);
+      _attached = false;
+      controller = fresh;
+      _attach(fresh);
+    } catch (_) {
+      // Старый controller вскоре будет уничтожен владельцем фичи, поэтому
+      // откат к нему небезопасен. Завершаем подписку целиком и не оставляем
+      // непарный acquire/refCount.
+      dispose();
+      rethrow;
+    }
+
     onControllerSwapped?.call();
   }
 
@@ -112,8 +127,19 @@ class FeatureSubscription<S, E> {
   /// повторный вызов — ошибка использования (то же, что и раньше:
   /// `HelmFeature.release` бросает `StateError` на непарный вызов).
   void dispose() {
-    detach(controller);
-    feature.lifecycle.removeListener(_onLifecycle);
-    feature.release();
+    if (_disposed) return;
+    _disposed = true;
+
+    if (_listensToLifecycle) {
+      feature.lifecycle.removeListener(_onLifecycle);
+      _listensToLifecycle = false;
+    }
+
+    try {
+      if (_attached) detach(controller);
+    } finally {
+      _attached = false;
+      feature.release();
+    }
   }
 }

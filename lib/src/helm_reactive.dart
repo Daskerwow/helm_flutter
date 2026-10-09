@@ -7,11 +7,10 @@ import 'helm_feature.dart';
 /// прямо в `build()` — без явного `HelmBuilder`/`HelmSelector`/`HelmListener`
 /// вокруг.
 ///
-/// Похоже на `HookWidget` из `flutter_hooks`, но без внешней зависимости и
-/// без индексации по порядку вызова: биндинги ключуются по идентичности
-/// самого [HelmFeature]-токена (см. [HelmReactiveElement]), поэтому
-/// `feature.watch()` можно звать из `if`/цикла без риска "съехавшего"
-/// состояния.
+/// Похоже на `HookWidget` из `flutter_hooks`, но зависимости определяются
+/// идентичностью [HelmFeature]-токенов, а не индексом вызова. Первый успешный
+/// `build` фиксирует их набор; в следующих build он должен оставаться тем же.
+/// Для другой фичи создай новый виджет с новым [Key].
 abstract class HelmWidget extends StatelessWidget {
   const HelmWidget({super.key});
 
@@ -199,15 +198,12 @@ class _EffectBinding<S, E>(
 
 /// [Element]-миксин, резолвящий `feature.watch()`/`.select()`/`.effect()`.
 ///
-/// ### Почему без "порядка вызовов", в отличие от классических хуков
+/// ### Неизменяемый граф зависимостей
 ///
-/// Классические хуки индексируют состояние по порядковому номеру вызова
-/// внутри `build()` — `useState` внутри `if`/цикла ломает всё. Здесь этой
-/// проблемы нет вообще, а не только частично: ключ биндинга — пара (сам
-/// объект [HelmFeature], вид биндинга: watch/select/effect), она не
-/// зависит ни от места вызова, ни от их количества за билд. Поэтому
-/// `feature.watch()`/`.select()`/`.effect()` можно звать условно, в цикле,
-/// в любом порядке между перестройками — без ключа и без индексации.
+/// Ключ биндинга — пара из объекта [HelmFeature] и его вида
+/// (`watch`/`select`/`effect`). После первого успешного build набор таких
+/// ключей неизменяем. Это исключает скрытую переподписку на другую фичу и
+/// оставляет lifecycle Element предсказуемым даже при ошибке во время build.
 ///
 /// Если из ОДНОЙ фичи в одном виджете нужно несколько независимых срезов —
 /// это не про порядок вызовов, а про то, что `select()` — один вызов на
@@ -215,12 +211,16 @@ class _EffectBinding<S, E>(
 /// возвращающий `record` (структурное `==` по полям встроено в Dart 3) —
 /// см. докстринг [HelmFeatureReactive.select].
 ///
-/// Биндинги, не вызванные в очередном `build()`, автоматически
-/// освобождаются сразу после него — без утечек и ручного управления.
+/// Условную зависимость оформляй отдельным дочерним виджетом с подходящим
+/// [Key], чтобы Flutter штатно размонтировал его перед созданием нового.
 mixin HelmReactiveElement on ComponentElement {
   static HelmReactiveElement? _current;
 
   final Map<_BindingKey, _Binding> _bindings = {};
+
+  /// Подписки, созданные в первом успешном build. Их идентичность образует
+  /// lifecycle-контракт Element и больше не может меняться.
+  Set<_BindingKey>? _bindingShape;
 
   /// Стек наборов "увиденных в текущем build()" ключей — один элемент на
   /// каждый вложенный/повторный вызов [build] (устойчивость к
@@ -238,13 +238,27 @@ mixin HelmReactiveElement on ComponentElement {
   final List<Set<_BindingKey>> _setPool = [];
 
   B _bindingFor<B extends _Binding>(_BindingKey key, B Function() create) {
-    assert(
-      _seenStack.isNotEmpty,
-      'feature.watch()/.select()/.effect() вызваны вне build()',
-    );
+    if (_seenStack.isEmpty) {
+      throw StateError(
+        'Helm: feature.watch()/.select()/.effect() можно вызывать только '
+        'внутри build() HelmWidget или StatefulHelmWidget.',
+      );
+    }
+
+    final shape = _bindingShape;
+    if (shape != null && !shape.contains(key)) {
+      throwFeatureIdentityChanged('HelmWidget');
+    }
+
     _seenStack.last.add(key);
     final existing = _bindings[key];
-    if (existing != null) return existing as B;
+    if (existing != null) {
+      if (existing is B) return existing;
+      throw StateError(
+        'Helm: select() для одной и той же HelmFeature должен сохранять '
+        'тип результата между build.',
+      );
+    }
     final created = create();
     _bindings[key] = created;
     return created;
@@ -257,33 +271,46 @@ mixin HelmReactiveElement on ComponentElement {
     final seen = _setPool.isNotEmpty ? _setPool.removeLast() : <_BindingKey>{};
 
     _seenStack.add(seen);
+    var completed = false;
 
     try {
-      return super.build();
+      final child = super.build();
+      completed = true;
+      return child;
     } finally {
       final finished = _seenStack.removeLast();
       _current = previousCurrent;
 
-      if (_seenStack.isNotEmpty) {
-        // реентрантный уровень — не финальный
-        _seenStack.last.addAll(finished);
-      } else {
-        // финальный уровень — чистим устаревшие биндинги
-        // только когда стек пустой
-        _disposeUnseenBindings(finished);
+      try {
+        if (_seenStack.isNotEmpty) {
+          _seenStack.last.addAll(finished);
+        } else if (completed) {
+          _commitBindingShape(finished);
+        } else if (_bindingShape == null) {
+          // Неуспешный первый build не имеет владельца, который позже
+          // вызовет dispose. Сразу освобождаем все уже acquired фичи.
+          for (final binding in _bindings.values) {
+            binding.dispose();
+          }
+          _bindings.clear();
+        }
+      } finally {
+        finished.clear();
+        _setPool.add(finished);
       }
-
-      finished.clear();
-      _setPool.add(finished);
     }
   }
 
-  void _disposeUnseenBindings(Set<_BindingKey> seen) {
-    _bindings.removeWhere((key, binding) {
-      final stale = !seen.contains(key);
-      if (stale) binding.dispose();
-      return stale;
-    });
+  void _commitBindingShape(Set<_BindingKey> seen) {
+    final shape = _bindingShape;
+    if (shape == null) {
+      _bindingShape = Set<_BindingKey>.unmodifiable(seen);
+      return;
+    }
+
+    if (shape.length != seen.length || !shape.containsAll(seen)) {
+      throwFeatureIdentityChanged('HelmWidget');
+    }
   }
 
   @override
@@ -298,12 +325,14 @@ mixin HelmReactiveElement on ComponentElement {
 
 HelmReactiveElement _requireElement() {
   final element = HelmReactiveElement._current;
-  assert(element != null, '''
-feature.watch()/.select()/.effect() можно вызывать только внутри build()
+  if (element == null) {
+    throw StateError('''
+Helm: feature.watch()/.select()/.effect() можно вызывать только внутри build()
 виджета, унаследованного от HelmWidget или StatefulHelmWidget. Вне build()
 используй feature.value/.read()/.listen() напрямую.
 ''');
-  return element!;
+  }
+  return element;
 }
 
 /// Короткий реактивный синтаксис прямо на токене фичи — `feature.watch()`

@@ -1,8 +1,8 @@
 /// Flutter-facing entry point for Helm.
 ///
 /// Framework-independent runtime lives in `package:helm_core/helm_core.dart`.
-/// This package re-exports it for Flutter applications; the Flutter bridge is
-/// available separately as `package:helm/flutter.dart`.
+/// This package re-exports it together with the Flutter bridge. Use
+/// `package:helm_flutter/helm_flutter.dart` as the single public import.
 ///
 /// ### Три принципа
 /// - **Явность** — каждый исход диспатча типизирован через [DispatchResult].
@@ -14,7 +14,7 @@
 /// ### Быстрый старт
 ///
 /// ```dart
-/// import 'package:helm/helm.dart';
+/// import 'package:helm_flutter/helm_flutter.dart';
 ///
 /// final store = StoreBuilder<MyState, MyEffect>(MyState.initial())
 ///     .onChanged((s) => print(s))
@@ -22,7 +22,7 @@
 ///     .onDispatch((event) => logger.debug(event.toLogString()))
 ///     .build();
 ///
-/// await store.dispatch(FetchDataCommand(_api));
+/// await store.dispatchAsync(FetchDataCommand(_api));
 /// store.close();
 /// ```
 ///
@@ -43,5 +43,7 @@
 /// `deepEquals` из `equality.dart` избавляют от ручной реализации
 /// содержательного сравнения — см. их докстринги.
 library;
+
+export 'package:helm_core/helm_core.dart';
 
 export './src/flutter.dart';

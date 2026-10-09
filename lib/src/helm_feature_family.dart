@@ -48,7 +48,7 @@ import 'helm_feature.dart';
 /// [disposeAll] целиком (например, при логауте).
 final class HelmFeatureFamily<K, S, E>(
   StateStore<S, E> Function(K key) create, {
-  final void Function(K key, E effect)? _onEffect,
+  this.onEffect,
 
   /// См. [HelmFeature.autoDispose] — применяется одинаково к каждому
   /// токену, созданному этой family.
@@ -58,16 +58,20 @@ final class HelmFeatureFamily<K, S, E>(
 
   final StateStore<S, E> Function(K key) _create;
 
+  /// Глобальная реакция на effect каждой фичи family. В колбэк передаётся
+  /// исходный ключ, чтобы обработчик мог адресовать событие нужной сущности.
+  final void Function(K key, E effect)? onEffect;
+
   final _features = <K, HelmFeature<S, E>>{};
 
   /// Токен фичи для [key] — создаётся лениво при первом обращении и
   /// кэшируется: повторный вызов с тем же (по `==`) [key] всегда
   /// возвращает один и тот же объект.
   HelmFeature<S, E> call(K key) => _features.putIfAbsent(key, () {
-    final onEffect = _onEffect;
+    final callback = onEffect;
     return HelmFeature<S, E>(
       () => _create(key),
-      onEffect: onEffect == null ? null : (effect) => onEffect(key, effect),
+      onEffect: callback == null ? null : (effect) => callback(key, effect),
       autoDispose: autoDispose,
     );
   });
@@ -83,13 +87,47 @@ final class HelmFeatureFamily<K, S, E>(
   /// идентичность токена (как [HelmFeature.dispose]), обращайся к
   /// `family(key).dispose()` напрямую.
   void remove(K key) {
-    _features.remove(key)?.dispose();
+    final feature = _features[key];
+    if (feature == null) return;
+    if (feature.hasRetainers) {
+      throw StateError(
+        'Helm: нельзя удалить family($key), пока фичу удерживает живой '
+        'виджет, listen() или HelmComputed. Сначала освободи владельцев, '
+        'либо вызови forceRemove() для осознанной принудительной очистки.',
+      );
+    }
+
+    _features.remove(key);
+    feature.dispose();
   }
 
   /// Закрывает Store для всех когда-либо запрошенных ключей и полностью
   /// очищает кэш — например, при логауте. Каждый последующий `family(key)`
   /// заведёт токены заново, с нуля.
   void disposeAll() {
+    for (final entry in _features.entries) {
+      if (entry.value.hasRetainers) {
+        throw StateError(
+          'Helm: нельзя очистить HelmFeatureFamily: family(${entry.key}) '
+          'ещё удерживается. Освободи владельцев или вызови '
+          'forceDisposeAll() для осознанной принудительной очистки.',
+        );
+      }
+    }
+
+    for (final feature in _features.values) {
+      feature.dispose();
+    }
+    _features.clear();
+  }
+
+  /// Принудительно закрывает и удаляет фичу, даже если её ещё удерживает UI.
+  /// Используй только для явной смены пользовательской сессии или аналогичной
+  /// полной очистки состояния.
+  void forceRemove(K key) => _features.remove(key)?.dispose();
+
+  /// Принудительно закрывает и удаляет все записи family.
+  void forceDisposeAll() {
     for (final feature in _features.values) {
       feature.dispose();
     }

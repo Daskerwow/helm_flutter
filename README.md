@@ -1,39 +1,66 @@
-<!--
-This README describes the package. If you publish this package to pub.dev,
-this README's contents appear on the landing page for your package.
+# helm_flutter
 
-For information about how to write a good package README, see the guide for
-[writing package pages](https://dart.dev/tools/pub/writing-package-pages).
-
-For general information about developing packages, see the Dart guide for
-[creating packages](https://dart.dev/tools/pub/create-packages)
-and the Flutter guide for
-[developing packages and plugins](https://flutter.dev/to/develop-packages).
--->
-
-TODO: Put a short description of the package here that helps potential users
-know whether this package might be useful for them.
-
-## Features
-
-TODO: List what your package can do. Maybe include images, gifs, or videos.
-
-## Getting started
-
-TODO: List prerequisites and provide or point to information on how to
-start using the package.
-
-## Usage
-
-TODO: Include short and useful examples for package users. Add longer examples
-to `/example` folder.
+`helm_flutter` connects the framework-independent Helm state runtime to
+Flutter's `Listenable` and widget lifecycle. It exposes `helm_core` and the
+Flutter bindings from one import:
 
 ```dart
-const like = 'sample';
+import 'package:helm_flutter/helm_flutter.dart';
 ```
 
-## Additional information
+## Core ideas
 
-TODO: Tell users more about the package: where to find more information, how to
-contribute to the package, how to file issues, what response they can expect
-from the package authors, and more.
+- `StateStore` executes synchronous, asynchronous and stream commands.
+- `HelmFeature` owns a lazily created Store and provides a global state token.
+- `HelmBuilder`, `HelmSelector` and `HelmListener` bind a feature to Flutter.
+- `HelmComputed` derives a value from one or more feature states.
+- `Loadable<T>` models idle, loading, data and error states.
+
+## A minimal feature
+
+```dart
+final counterFeature = HelmFeature<int, Never>(
+  () => StateStore(initialState: 0),
+);
+
+final class Increment implements SyncCommand<int> {
+  const Increment();
+
+  @override
+  int execute(int current) => current + 1;
+}
+```
+
+Render it with a binding:
+
+```dart
+HelmBuilder<int, Never>(
+  counterFeature,
+  builder: (context, count) => Text('$count'),
+)
+```
+
+## Lifecycle invariant
+
+A mounted binding always keeps the same `HelmFeature` object. This makes
+ownership and automatic disposal deterministic. To intentionally switch to a
+different feature, mount a new Element with a new key:
+
+```dart
+HelmBuilder<int, Never>(
+  key: ObjectKey(feature),
+  feature,
+  builder: (context, state) => Text('$state'),
+)
+```
+
+The same rule applies to the dependency set of `HelmWidget` and
+`StatefulHelmWidget`. Keep it constant for the Element lifetime; model a
+dynamic branch as a keyed child widget.
+
+## Ownership
+
+Use `autoDispose: true` for screen-scoped state. Flutter bindings, `listen()`
+and `HelmComputed` retain the feature while they are alive. A family refuses to
+remove a retained feature; `forceRemove` and `forceDisposeAll` are reserved for
+explicit session-wide cleanup.

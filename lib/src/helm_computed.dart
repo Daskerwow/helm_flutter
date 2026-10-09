@@ -121,6 +121,7 @@ class HelmComputed<T>(
   /// вызов и так пересчитает актуальное значение по завершении).
   bool _recomputing = false;
   bool _recomputeRequested = false;
+  bool _disposed = false;
 
   /// См. докстринг класса, раздел "Диагностика забытого dispose()" — только
   /// debug-режим, мутации обёрнуты в `assert`.
@@ -141,6 +142,7 @@ class HelmComputed<T>(
       _syncDependencies(tracked);
       return result;
     } catch (_) {
+      _releaseDependencies();
       for (final feature in tracked) {
         feature.disposeIfUnretained();
       }
@@ -149,6 +151,14 @@ class HelmComputed<T>(
   }
 
   void _syncDependencies(Set<HelmFeatureHandle> tracked) {
+    // Сначала присоединяем новые зависимости. Если их фабрика или подписка
+    // бросит исключение, старый граф остаётся рабочим и может инициировать
+    // следующую попытку вычисления.
+    for (final feature in tracked) {
+      if (_deps.containsKey(feature)) continue;
+      _attachDependency(feature);
+    }
+
     _deps.removeWhere((feature, listenable) {
       if (tracked.contains(feature)) return false;
 
@@ -158,22 +168,36 @@ class HelmComputed<T>(
 
       return true;
     });
+  }
 
-    for (final feature in tracked) {
-      if (_deps.containsKey(feature)) continue;
-
-      final listenable = feature.acquireListenable();
+  void _attachDependency(HelmFeatureHandle feature) {
+    final listenable = feature.acquireListenable();
+    try {
       listenable.addListener(_recompute);
       feature.lifecycle.addListener(_onDependencyLifecycle);
-
       _deps[feature] = listenable;
+    } catch (_) {
+      listenable.removeListener(_recompute);
+      feature.lifecycle.removeListener(_onDependencyLifecycle);
+      feature.release();
+      rethrow;
     }
+  }
+
+  void _releaseDependencies() {
+    for (final entry in _deps.entries) {
+      entry.value.removeListener(_recompute);
+      entry.key.lifecycle.removeListener(_onDependencyLifecycle);
+      entry.key.release();
+    }
+    _deps.clear();
   }
 
   /// Срабатывает, когда у одной из зависимостей заменился внутренний
   /// контроллер — переподписываемся на актуальный [Listenable] той же фичи
   /// и пересчитываем: новый Store мог стартовать с другого состояния.
   void _onDependencyLifecycle() {
+    if (_disposed) return;
     for (final feature in _deps.keys.toList(growable: false)) {
       final old = _deps[feature];
 
@@ -192,6 +216,7 @@ class HelmComputed<T>(
   }
 
   void _recompute() {
+    if (_disposed) return;
     if (_recomputing) {
       _recomputeRequested = true;
       return;
@@ -207,7 +232,13 @@ class HelmComputed<T>(
         try {
           next = trackHelmDependencies(_compute, tracked.add);
         } catch (e, st) {
-          _syncDependencies(tracked);
+          // Не удаляем прежние зависимости после неудачного вычисления.
+          // Иначе фича, которую код ещё не успел прочитать до ошибки, больше
+          // не сможет инициировать восстановление computed. Новые фичи,
+          // прочитанные до ошибки, добавляются: их изменение тоже может
+          // сделать следующую попытку успешной. Только успешный проход имеет
+          // право сузить граф зависимостей.
+          _syncDependencies({..._deps.keys, ...tracked});
           final handler = onError;
           if (handler == null) rethrow;
           handler(e, st);
@@ -230,12 +261,10 @@ class HelmComputed<T>(
 
   @override
   void dispose() {
-    for (final entry in _deps.entries) {
-      entry.value.removeListener(_recompute);
-      entry.key.lifecycle.removeListener(_onDependencyLifecycle);
-      entry.key.release();
-    }
-    _deps.clear();
+    if (_disposed) return;
+    _disposed = true;
+
+    _releaseDependencies();
 
     assert(() {
       _debugActiveComputed.remove(this);

@@ -5,8 +5,8 @@ import 'helm_controller.dart';
 import 'helm_feature.dart';
 
 /// Общая часть привязки `State` к [HelmFeature]: acquire в `initState`,
-/// подписка на [HelmFeature.lifecycle], смена фичи в `didUpdateWidget`
-/// ([rebindFeature]), release в `dispose`. Устраняет дублирование этого
+/// подписка на [HelmFeature.lifecycle], проверка идентичности фичи в
+/// `didUpdateWidget`, release в `dispose`. Устраняет дублирование этого
 /// скелета между [HelmBuilder]/[HelmSelector]/[HelmListener] — они
 /// отличаются только тем, что вешают на контроллер поверх него ([onBind]/
 /// [onUnbind]).
@@ -26,8 +26,8 @@ mixin _FeatureBindingState<S, E, W extends StatefulWidget> on State<W> {
   HelmFeature<S, E> get feature;
 
   /// Достаёт [HelmFeature] из произвольного экземпляра виджета — нужен для
-  /// единого [didUpdateWidget] ниже, чтобы сравнить `oldWidget.feature` с
-  /// актуальным [feature] без дублирования этого сравнения в каждом `State`.
+  /// единого [didUpdateWidget] ниже, чтобы запретить подмену токена в уже
+  /// существующем [Element].
   HelmFeature<S, E> featureOf(W widget);
 
   /// `true` (по умолчанию) — смена контроллера вызывает `setState`.
@@ -65,14 +65,9 @@ mixin _FeatureBindingState<S, E, W extends StatefulWidget> on State<W> {
   void didUpdateWidget(covariant W oldWidget) {
     super.didUpdateWidget(oldWidget);
     final oldFeature = featureOf(oldWidget);
-    if (!identical(oldFeature, feature)) rebindFeature(oldFeature);
-  }
-
-  /// Вызывается из [didUpdateWidget], когда сам токен [HelmFeature]
-  /// сменился на другой объект — например, виджету передали другую фичу.
-  void rebindFeature(HelmFeature<S, E> oldFeature) {
-    _subscription.dispose();
-    _subscription = _createSubscription();
+    if (!identical(oldFeature, feature)) {
+      throwFeatureIdentityChanged(runtimeType.toString());
+    }
   }
 
   @override

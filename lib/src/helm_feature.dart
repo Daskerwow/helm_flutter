@@ -185,6 +185,11 @@ final class HelmFeature<S, E>
   /// `true`, если Store фичи создан и активен.
   bool get isActive => _controller != null;
 
+  /// Есть ли у фичи активные владельцы: Flutter-виджеты, `listen()` или
+  /// [HelmComputed]. Нужен владельцам коллекций фич, чтобы не уничтожать
+  /// запись, которая ещё используется живым UI.
+  bool get hasRetainers => _refCount > 0;
+
   /// Уведомляет о замене внутреннего [HelmController] — срабатывает на
   /// [overrideWith] и на принудительный [dispose]. В отличие от самого
   /// [HelmController], не пересоздаётся — безопасно подписаться один раз.
