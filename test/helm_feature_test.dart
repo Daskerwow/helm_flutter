@@ -26,6 +26,22 @@ void main() {
     feature.dispose();
   });
 
+  test('overrideWith: restore после LIFO-нарушения можно повторить', () {
+    final feature = HelmFeature<int, Never>(() => StateStore(initialState: 0));
+    final restoreOuter = feature.overrideWith(
+      () => StateStore(initialState: 1),
+    );
+    final restoreInner = feature.overrideWith(
+      () => StateStore(initialState: 2),
+    );
+
+    expect(restoreOuter, throwsStateError); // нарушили LIFO
+    restoreInner(); // восстановили как надо
+    expect(restoreOuter, returnsNormally); // теперь можно повторить успешно
+    expect(feature.value, 0);
+    feature.dispose();
+  });
+
   test('overrideWith заменяет Store при активном подписчике', () {
     final feature = HelmFeature<int, Never>(() => StateStore(initialState: 0));
     final unsubscribe = feature.listen((_) {});
